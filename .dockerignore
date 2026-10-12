@@ -1,0 +1,9 @@
+.git
+.gitignore
+*.safetensors
+*.mp4
+*.png
+*.jpg
+*.zip
+**/huggingface_cache/
+**/__pycache__/
