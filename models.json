@@ -1,0 +1,49 @@
+{
+  "REPOS": {
+    "image": [
+      "Comfy-Org/Qwen-Image-2.1",
+      "df94239739eef7205973a145ffa6f441f7b64e84"
+    ],
+    "video": [
+      "Comfy-Org/MiniMax-H3",
+      "e5eb578a89295337b8ff433a035929ce0279e0b6"
+    ]
+  },
+  "MODELS": [
+    [
+      "image",
+      "diffusion_models/qwen_image_2.1_bf16.safetensors",
+      14230280616
+    ],
+    [
+      "image",
+      "text_encoders/qwen3vl_8b_bf16.safetensors",
+      17534334616
+    ],
+    [
+      "image",
+      "vae/qwen_image_2.1_vae_bf16.safetensors",
+      675509688
+    ],
+    [
+      "video",
+      "diffusion_models/minimax_h3_fl2va_bf16.safetensors",
+      66280487368
+    ],
+    [
+      "video",
+      "text_encoders/qwen3vl_32b_minimax_h3_bf16.safetensors",
+      51506295256
+    ],
+    [
+      "video",
+      "vae/minimax_h3_video_vae_fp16.safetensors",
+      5207808496
+    ],
+    [
+      "video",
+      "vae/minimax_h3_audio_vae_fp32.safetensors",
+      605254808
+    ]
+  ]
+}

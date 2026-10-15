@@ -1,0 +1,16 @@
+{
+  "captured": "2026-10-15",
+  "source": "actual GET /object_info from CPU ComfyUI; no inference",
+  "comfy_commit": "6b747c0428c343e1417219641db93a4fb7cb69ae",
+  "vhs_commit": "4d907bee61e92c2e65af3bd6383a4e4d356126d1",
+  "torch": "2.8.0+cpu",
+  "full_node_count": 1004,
+  "schema_scope": "selected nodes; actual empty model lists preserved",
+  "origin_fixture": "exact functions extracted from pinned server.py; tests execute them in aiohttp",
+  "limitations": [
+    "No production shot JSON in supplied bundle",
+    "No native-audio inference",
+    "CPU dependency inventory is in evidence; this is not the CUDA Docker image"
+  ],
+  "upstream_license": "ComfyUI GPL-3.0; VHS GPL-3.0 (upstream source repositories govern)"
+}

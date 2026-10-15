@@ -1,6 +1,6 @@
-# PAWLISHED & PINK — GHCR R2 CANDIDATE. No model weights or private assets.
-# Base matches the tested Stage 2 R2 RunPod recipe. Exact base digest still needs recording.
-FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+# syntax=docker/dockerfile:1
+# R4 offline candidate; immutable amd64 base, inspected 2026-10-15.
+FROM runpod/pytorch@sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -10,14 +10,18 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PP_COMFY_PY=/opt/pp-venv/bin/python \
     PP_AUTO_DOWNLOAD_MODELS=1 \
     PP_MODE=both \
-    PP_DOWNLOAD_WORKERS=3
+    PP_DOWNLOAD_WORKERS=1
 
 # ComfyUI stays outside /workspace, which RunPod can mount as a volume.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export SSL_CERT_FILE=/run/secrets/proxy_ca PIP_CERT=/run/secrets/proxy_ca GIT_SSL_CAINFO=/run/secrets/proxy_ca; fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
     git ffmpeg ca-certificates curl libgl1 libglib2.0-0 python3-venv && \
     rm -rf /var/lib/apt/lists/*
 
-RUN git clone https://github.com/Comfy-Org/ComfyUI.git /opt/ComfyUI && \
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export SSL_CERT_FILE=/run/secrets/proxy_ca PIP_CERT=/run/secrets/proxy_ca GIT_SSL_CAINFO=/run/secrets/proxy_ca; fi; \
+    git clone https://github.com/Comfy-Org/ComfyUI.git /opt/ComfyUI && \
     git -C /opt/ComfyUI checkout --detach 6b747c0428c343e1417219641db93a4fb7cb69ae && \
     test "$(git -C /opt/ComfyUI rev-parse HEAD)" = '6b747c0428c343e1417219641db93a4fb7cb69ae'
 
@@ -25,14 +29,18 @@ COPY constraints.txt /opt/pp-install/constraints.txt
 COPY torch-constraints.txt /opt/pp-install/torch-constraints.txt
 
 # Inherit CUDA-enabled torch from the pinned base. Do not download CPU torch into image.
-RUN python3 -m venv --system-site-packages /opt/pp-venv && \
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export SSL_CERT_FILE=/run/secrets/proxy_ca PIP_CERT=/run/secrets/proxy_ca GIT_SSL_CAINFO=/run/secrets/proxy_ca; fi; \
+    python3 -m venv --system-site-packages /opt/pp-venv && \
     /opt/pp-venv/bin/python -m pip install --no-cache-dir \
       --prefer-binary --default-timeout 90 --retries 4 \
       -c /opt/pp-install/torch-constraints.txt \
       -c /opt/pp-install/constraints.txt \
       -r /opt/ComfyUI/requirements.txt
 
-RUN git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git \
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export SSL_CERT_FILE=/run/secrets/proxy_ca PIP_CERT=/run/secrets/proxy_ca GIT_SSL_CAINFO=/run/secrets/proxy_ca; fi; \
+    git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git \
       /opt/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite && \
     git -C /opt/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite \
       checkout --detach 4d907bee61e92c2e65af3bd6383a4e4d356126d1 && \
@@ -42,20 +50,26 @@ RUN git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git \
       -r /opt/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite/requirements.txt
 
 # Separate small download environment; models NEVER build into the public image.
-RUN python3 -m venv /opt/pp-hf-venv && \
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export SSL_CERT_FILE=/run/secrets/proxy_ca PIP_CERT=/run/secrets/proxy_ca GIT_SSL_CAINFO=/run/secrets/proxy_ca; fi; \
+    python3 -m venv /opt/pp-hf-venv && \
     /opt/pp-hf-venv/bin/pip install --no-cache-dir \
-       'huggingface_hub==2.2.0' 'hf_xet==1.7.0'
+       'huggingface_hub==2.2.0' 'hf_xet==1.7.0' 'safetensors==0.8.0' 'numpy==2.5.2'
 
+# Jupyter remains the normal JupyterLab application with an explicit tested config.
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export SSL_CERT_FILE=/run/secrets/proxy_ca PIP_CERT=/run/secrets/proxy_ca GIT_SSL_CAINFO=/run/secrets/proxy_ca; fi; \
+    python3 -m venv /opt/pp-jupyter && /opt/pp-jupyter/bin/pip install \
+    'jupyterlab==4.4.10' 'jupyter_server==2.17.0'
+COPY *.py models.json /opt/pp/
 COPY pp-start.sh /opt/pp-start.sh
-COPY model_sync.py /opt/model_sync.py
-COPY pp-monitor.py /opt/pp-monitor.py
 COPY extra_model_paths.yaml /opt/ComfyUI/extra_model_paths.yaml
-RUN chmod +x /opt/pp-start.sh && \
-    /opt/pp-venv/bin/python -c 'import torch; assert torch.__version__.startswith("2.8."); print("Torch installed:",torch.__version__)' && \
-    /opt/pp-venv/bin/python -m pip check
-
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export SSL_CERT_FILE=/run/secrets/proxy_ca PIP_CERT=/run/secrets/proxy_ca GIT_SSL_CAINFO=/run/secrets/proxy_ca; fi; \
+    chmod +x /opt/pp-start.sh && \
+    /opt/pp-venv/bin/python -c 'import torch; assert torch.__version__.startswith("2.8.")' && \
+    /opt/pp-venv/bin/python -m pip check && /opt/pp-jupyter/bin/python -m pip check
 EXPOSE 8188 8888
 WORKDIR /workspace
-# Explicit startup so the base entrypoint cannot silently ignore our commands.
-# The wrapper launches /start.sh separately for RunPod Jupyter/SSH.
-ENTRYPOINT ["/opt/pp-start.sh"]
+# Preserve CUDA's environment setup. Deliberately avoid the unmonitored /start.sh.
+ENTRYPOINT ["/opt/nvidia/nvidia_entrypoint.sh", "/opt/pp-start.sh"]
