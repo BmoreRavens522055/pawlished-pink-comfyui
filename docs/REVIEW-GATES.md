@@ -18,7 +18,7 @@ No paid pod, network volume, model inference, template modification, shutdown or
 | Restart / billing | Read actual provider behavior. Wrapper failure does not stop billing; no indefinite unattended deployment or automatic provider action |
 | Private material | Approved ZIPs/assets stay on private workspace; never in image/repo. Public pinned weights download directly on pod |
 
-Free completion gates before production: finish actual R4 image build and integrated container tests, retain image digest/dependency inventory; review candidate and saved templates; prepare actual complete approved primary/fallback workflows and inputs. No saved-template access is configured here, so template readback is NOT RUN.
+Free engineering build and integrated container checks now pass; see RESULTS.md. Before production: review/authorize any immutable candidate publication and retain its resulting registry digest; review candidate and saved templates; prepare actual complete approved primary/fallback workflows and inputs. No saved-template access is configured here, so template readback is NOT RUN.
 
 During the next normally authorized real episode only: confirm RunPod browser Jupyter login/terminal/upload, direct 8188 navigation, selected full HF transfers, mounted storage disposition and exact graph/reference/audio wiring. Capture startup/model/Comfy logs and sanitized template facts, prompt history and outputs. Attempt the assumed MULTI/native-physical-sound primary under ordinary Technical GO; do not require a separate paid qualification session. If a material sound/reference capability fails, retain accepted picture and present the concrete fallback choice; never silently replace sound or conditioning.
 

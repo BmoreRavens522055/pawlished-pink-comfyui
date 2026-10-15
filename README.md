@@ -1,6 +1,6 @@
 # Pawlished & Pink R4.0.0-rc1
 
-Review candidate, not production-approved. No paid deployment or inference has been performed. See `docs/RESULTS.md` for the actual test/build results, `docs/EVIDENCE.md` for causes versus unknowns, and `docs/REVIEW-GATES.md` before any deployment. R2 and the supplied R3 evidence remain unchanged.
+Built and container-smoke-tested review candidate, not production-approved. No paid deployment or inference has been performed. See `docs/RESULTS.md` for the actual test/build results, `docs/EVIDENCE.md` for causes versus unknowns, and `docs/REVIEW-GATES.md` before any deployment. R2 and the supplied R3 evidence remain unchanged.
 
 ## Two locally saved commands
 
@@ -20,7 +20,7 @@ Exact one-line TXT copies are in `commands/`. These commands are **for an R4 ima
 
 ## One-page operator runbook
 
-1. Before paid time, Technical supplies the approved episode ZIP and compatible complete shot workflows. Review the saved IMAGE/VIDEO/BOTH template against `docs/REVIEW-GATES.md`; do not change templates or deploy this unbuilt/unapproved candidate from this README. Obtain normal episode authorization and current price/budget. No separate paid canary is prescribed.
+1. Before paid time, Technical supplies the approved episode ZIP and compatible complete shot workflows. Review the saved IMAGE/VIDEO/BOTH template against `docs/REVIEW-GATES.md`; do not change templates or deploy this unapproved candidate from this README. Obtain normal episode authorization and current price/budget. No separate paid canary is prescribed.
 2. Once the image and template gates pass, deploy **one** approved pod with persistent `/workspace`, HTTP 8888 and 8188, and RunPod **Start Jupyter notebook** enabled. Boot automatically starts authenticated normal JupyterLab and ComfyUI, then selected pinned model sync. Run the two commands above in two terminals. Read phase, errors and next action; local APIs ready is not production/graph approval.
 3. Open normal JupyterLab from RunPod Connect. The token comes from RunPod's configured Jupyter setting. Upload the complete approved ZIP into **`/workspace/uploads/`** and wait for the browser upload to finish. Repeat terminal-one init. It preserves the one Episode-ID root under **`/workspace/ComfyUI/input/<Episode-ID>/`**, fills standard empty folders, refuses conflicts and never rewrites approved JSON or filenames. Follow-on changes use a new versioned root; this candidate does not merge conflicting revisions.
 4. Open the current 8188 URL directly in the browser address bar. If RunPod's cross-site link returns 403, directly navigate/reload that same URL. Core origin checks are unchanged. Load the approved workflow from its episode `JSON/Cloud` folder. API JSON receives a read-only current-schema check; UI JSON still needs native loading. Referenced input paths must already be `<Episode-ID>/Pics/...` relative to ComfyUI input. A package with incompatible paths is reported, never silently rewritten. Technical resolves an affected workflow before paid use; owner does not rewire nodes.
@@ -32,6 +32,6 @@ If a startup/download failure cannot be resolved immediately by the prepared ini
 
 ## Engineering
 
-`python -m unittest discover -s tests -v` after installing `tests/requirements.txt`. Real supervisor tests additionally use `PP_TEST_COMFY_DIR` and `PP_TEST_COMFY_PY` for the pinned CPU installation; no model inference. `tests/container-smoke.sh IMAGE` exercises the actual built image without GPU or downloads. CI has read-only permissions, no login, no push and no production tags; container build is manual dispatch after offline tests. A public build may still consume account CI allowance; no remote workflow was dispatched here.
+`python -m unittest discover -s tests -v` after installing `tests/requirements.txt`. Real supervisor tests additionally use `PP_TEST_COMFY_DIR` and `PP_TEST_COMFY_PY` for the pinned CPU installation; no model inference. `tests/container-smoke.sh IMAGE` exercises the actual built image without GPU or downloads. CI has read-only permissions, no login, no push and no production tags; container build runs for public-repository pull requests or manual dispatch after offline tests. Only the free standard runner for this public repository is used; no larger paid runner or registry publication is configured. See the results record for actual runs.
 
 The R4 wrapper deliberately replaces the base `/start.sh` service fan-out with supervised Jupyter/ComfyUI. It retains NVIDIA entrypoint initialization but does not launch nginx, base pre-start hooks or SSH. Normal Jupyter terminals are supported and tested; SSH-dependent deployments are outside this candidate's supported interface. Jupyter's token remains authenticated, CORS/XSRF protections remain enabled, and token-bearing runtime files live outside the archive tree.
