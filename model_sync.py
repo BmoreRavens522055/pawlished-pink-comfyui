@@ -1,151 +1,234 @@
-#!/usr/bin/env python3
-"""Download the selected, pinned model family with <=3 concurrent hf_xet jobs.
+"""Pinned resumable transfers, bounded workers, measured payload progress.
 
-Model weights are *not* part of the public Docker image. This code performs
-size verification only (not cryptographic verification). It does not infer.
+Exact size + safetensors metadata openability, never a full-weight hash or inference.
 """
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
-from pathlib import Path
+
+import fcntl
 import json
 import os
+from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
-import threading
 import time
+import threading
+import uuid
+from pp_common import CODE, ROOT, SETUP, GIB, atomic, read, memory_available
 
-ROOT = Path('/workspace')
-MODEL_ROOT = ROOT / 'models'
-SETUP = ROOT / 'PP_RunPod_Setup'
-STAGING = ROOT / '.pp-model-staging'
-HF = '/opt/pp-hf-venv/bin/hf'
-REPOS = {
-    'image': ('Comfy-Org/Qwen-Image-2.1', 'df94239739eef7205973a145ffa6f441f7b64e84'),
-    'video': ('Comfy-Org/MiniMax-H3', 'e5eb578a89295337b8ff433a035929ce0279e0b6'),
-}
-MODELS = (
-    ('image', 'diffusion_models/qwen_image_2.1_bf16.safetensors', 14230280616),
-    ('image', 'text_encoders/qwen3vl_8b_bf16.safetensors', 17534334616),
-    ('image', 'vae/qwen_image_2.1_vae_bf16.safetensors', 675509688),
-    ('video', 'diffusion_models/minimax_h3_fl2va_bf16.safetensors', 66280487368),
-    ('video', 'text_encoders/qwen3vl_32b_minimax_h3_bf16.safetensors', 51506295256),
-    ('video', 'vae/minimax_h3_video_vae_fp16.safetensors', 5207808496),
-    ('video', 'vae/minimax_h3_audio_vae_fp32.safetensors', 605254808),
-)
-LOCK = threading.Lock()
-STATUS = {'mode': None, 'phase': 'STARTING', 'workers': 0, 'files': {}, 'updated_utc': None,
-          'network_receive_mib_s': None, 'network_note': 'Total pod receive rate, not per-file payload rate'}
+MANIFEST = json.loads((CODE / "models.json").read_text())
+REPOS, MODELS = MANIFEST["REPOS"], MANIFEST["MODELS"]
 
-def utc():
-    return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
-def log(msg):
-    print(f'[{utc()}] {msg}', flush=True)
+def verify(path, expected):
+    if path.is_symlink() or not path.is_file() or path.stat().st_size != expected:
+        raise ValueError("missing, symlink, or wrong byte count: " + str(path))
+    from safetensors import safe_open
 
-def save():
+    with safe_open(str(path), framework="numpy") as f:
+        if not f.keys():
+            raise ValueError("empty model: " + str(path))
+        # Metadata only, does not load giant tensors into RAM.
+        for key in f.keys():
+            f.get_slice(key).get_shape()
+
+
+def run(
+    mode,
+    boot,
+    auto=True,
+    entries=None,
+    worker_command=None,
+    reserve=30 * GIB,
+    stall=600,
+    deadline=14400,
+    poll=1,
+):
+    entries = [
+        m
+        for m in (MODELS if entries is None else entries)
+        if mode == "both" or m[0] == mode
+    ]
+    if mode not in ("image", "video", "both") or not entries:
+        raise ValueError("invalid or empty model profile")
     SETUP.mkdir(parents=True, exist_ok=True)
-    STATUS['updated_utc'] = utc()
-    temp = SETUP / 'model_state.json.tmp'
-    temp.write_text(json.dumps(STATUS, indent=2), encoding='utf-8')
-    temp.replace(SETUP / 'model_state.json')
+    lock = (SETUP / "model.lock").open("a")
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    attempt = uuid.uuid4().hex
+    state = {
+        "boot_id": boot,
+        "attempt": attempt,
+        "mode": mode,
+        "phase": "CHECKING",
+        "files": {},
+    }
+    active = {}
 
-def set_status(name, status, detail=None):
-    with LOCK:
-        STATUS['files'].setdefault(name, {})['status'] = status
-        STATUS['files'][name]['updated_utc'] = utc()
-        if detail is not None:
-            STATUS['files'][name]['detail'] = detail
-        save()
+    def save():
+        state["updated"] = time.time()
+        state["workers"] = len(active)
+        atomic(SETUP / "model_state.json", state)
 
-def download_one(entry):
-    family, rel, expected = entry
-    dst = MODEL_ROOT / rel
-    if dst.is_file() and dst.stat().st_size == expected:
-        set_status(rel, 'VERIFIED', 'Already present, correct byte count')
-        return
-    if dst.exists():
-        raise RuntimeError(f'Existing model file has incorrect size: {dst}')
-    repo, revision = REPOS[family]
-    # Each process gets its own local-dir metadata and HF cache directory.
-    # Completed files are moved atomically on the same /workspace filesystem.
-    stage = STAGING / family / dst.name
-    stage.mkdir(parents=True, exist_ok=True)
-    source = stage / rel
-    cmd = [HF, 'download', repo, rel, '--revision', revision, '--local-dir', str(stage)]
-    env = os.environ.copy()
-    env.update(HF_HOME=str(stage / '.hf-home'), HF_XET_HIGH_PERFORMANCE='1',
-               HF_HUB_DISABLE_TELEMETRY='1', HF_XET_CHUNK_CACHE_SIZE_BYTES='0')
-    logfile = SETUP / 'downloads' / (dst.name + '.log')
-    logfile.parent.mkdir(parents=True, exist_ok=True)
-    set_status(rel, 'DOWNLOADING', f'{repo}@{revision}; expected {expected} bytes')
-    log(f'DOWNLOAD START {rel} ({expected / 1024**3:.2f} GiB)')
-    with logfile.open('a', encoding='utf-8') as out:
-        proc = subprocess.run(cmd, env=env, stdout=out, stderr=subprocess.STDOUT)
-    if proc.returncode != 0:
-        set_status(rel, 'FAILED', f'hf download exit {proc.returncode}; see {logfile}')
-        raise RuntimeError(f'Download failed ({proc.returncode}): {rel}; {logfile}')
-    if not source.is_file() or source.stat().st_size != expected:
-        actual = source.stat().st_size if source.exists() else 'missing'
-        set_status(rel, 'FAILED', f'Expected {expected} bytes; found {actual}')
-        raise RuntimeError(f'Size verification failed: {rel}: {actual} != {expected}')
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    source.replace(dst)
-    # Do not delete other staging directories: their workers may be downloading.
-    shutil.rmtree(stage, ignore_errors=True)
-    set_status(rel, 'VERIFIED', f'Exact byte count: {expected}')
-    log(f'VERIFIED {rel} ({expected} bytes)')
+    def stop(*_):
+        raise InterruptedError("model sync interrupted")
 
-def main():
-    mode = os.environ.get('PP_MODE', 'both').strip().lower()
-    if mode not in {'image', 'video', 'both'}:
-        raise RuntimeError(f'Invalid PP_MODE={mode!r}; use image, video, or both')
-    workers = int(os.environ.get('PP_DOWNLOAD_WORKERS', '3'))
-    if not 1 <= workers <= 3:
-        raise RuntimeError('PP_DOWNLOAD_WORKERS must be between 1 and 3')
-    chosen = [m for m in MODELS if mode == 'both' or m[0] == mode]
-    MODEL_ROOT.mkdir(parents=True, exist_ok=True)
-    SETUP.mkdir(parents=True, exist_ok=True)
-    STATUS.update(mode=mode, workers=workers, phase='PRECHECK')
-    for _,rel,expected in chosen:
-        STATUS['files'][rel] = {'status': 'PENDING', 'expected_bytes': expected}
-    save()
-    missing = sum(expected for _, rel, expected in chosen
-                  if not (MODEL_ROOT / rel).is_file() or (MODEL_ROOT / rel).stat().st_size != expected)
-    free = shutil.disk_usage(MODEL_ROOT).free
-    # Parallel Xet downloads may use scratch space. Reserve 30 GiB.
-    reserve = 30 * 1024**3
-    log(f'MODE={mode} FILES={len(chosen)} WORKERS={workers} '
-        f'MISSING={missing/1024**3:.2f}GiB FREE={free/1024**3:.2f}GiB '
-        f'RESERVE={reserve/1024**3:.0f}GiB')
-    if free < missing + reserve:
-        raise RuntimeError('Insufficient storage for selected model files plus 30 GiB reserve')
-    STATUS['phase'] = 'DOWNLOADING'
-    save()
-    failures = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        jobs = {pool.submit(download_one, m): m[1] for m in chosen}
-        for future in as_completed(jobs):
-            try:
-                future.result()
-            except Exception as exc:
-                log(f'ERROR {jobs[future]}: {exc}')
-                failures.append(str(exc))
-    if failures:
-        STATUS['phase'] = 'FAILED'
-        STATUS['errors'] = failures
-        save()
-        raise RuntimeError('; '.join(failures))
-    STATUS['phase'] = 'VERIFIED'
-    save()
-    log(f'ALL {len(chosen)} {mode.upper()} MODEL FILES VERIFIED. NO INFERENCE.')
-
-if __name__ == '__main__':
+    old = {}
+    if threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            old[sig] = signal.signal(sig, stop)
     try:
-        main()
-    except Exception as exc:
-        STATUS['phase'] = 'FAILED'
-        STATUS['error'] = str(exc)
+        pending = []
+        for family, rel, size in entries:
+            dst = ROOT / "models" / rel
+            s = state["files"][rel] = {
+                "expected_bytes": size,
+                "bytes": None,
+                "status": "CHECKING",
+            }
+            save()
+            if dst.exists() or dst.is_symlink():
+                verify(dst, size)
+                s.update(status="VERIFIED_BYTES_OPENABLE", bytes=size)
+            else:
+                s["status"] = "PENDING"
+                pending.append((family, rel, size))
         save()
-        log('MODEL SYNC FAILED: ' + str(exc))
-        sys.exit(1)
+        if pending and not auto:
+            raise RuntimeError("downloads disabled and selected models missing")
+        if pending:
+            requested = int(os.environ.get("PP_DOWNLOAD_WORKERS", "1"))
+            if not 1 <= requested <= 3:
+                raise ValueError("workers must be 1..3")
+            # Conservative admission budget, not a claim of proven Xet peak RAM.
+            capacity = (memory_available() - 4 * GIB) // (8 * GIB)
+            if capacity < 1:
+                raise RuntimeError(
+                    "insufficient available RAM: require 12 GiB for a transfer"
+                )
+            workers = min(requested, capacity)
+            if shutil.disk_usage(ROOT).free < sum(m[2] for m in pending) + reserve:
+                raise RuntimeError("insufficient disk for missing models plus reserve")
+        else:
+            workers = 0
+        start = time.monotonic()
+        state["phase"] = "DOWNLOADING"
+        save()
+        while pending or active:
+            if time.monotonic() - start > deadline:
+                raise TimeoutError("model sync wall-clock deadline exceeded")
+            while pending and len(active) < workers:
+                family, rel, size = pending.pop(0)
+                stage = ROOT / ".pp-model-staging" / family / Path(rel).name
+                stage.mkdir(parents=True, exist_ok=True)
+                event = stage / "progress.json"
+                event.unlink(missing_ok=True)
+                logfile = SETUP / "downloads" / (Path(rel).name + ".log")
+                logfile.parent.mkdir(exist_ok=True)
+                log = logfile.open("a")
+                repo, rev = REPOS[family]
+                cmd = (
+                    worker_command or [sys.executable, str(CODE / "hf_worker.py")]
+                ) + [repo, rev, rel, str(stage), str(event), boot, attempt]
+                env = os.environ.copy()
+                env.update(
+                    HF_HOME=str(stage / ".hf-home"),
+                    HF_XET_HIGH_PERFORMANCE="0",
+                    HF_HUB_DISABLE_TELEMETRY="1",
+                    HF_XET_CHUNK_CACHE_SIZE_BYTES="0",
+                    HF_XET_NUM_CONCURRENT_RANGE_GETS="4",
+                )
+                proc = subprocess.Popen(
+                    cmd,
+                    env=env,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                active[rel] = (proc, stage, event, log, time.monotonic(), None)
+                state["files"][rel].update(status="DOWNLOADING", pid=proc.pid)
+            for rel, (proc, stage, event, log, last, previous) in list(active.items()):
+                s = state["files"][rel]
+                progress = read(event)
+                if (
+                    progress.get("attempt") == attempt
+                    and progress.get("boot_id") == boot
+                ):
+                    count = progress.get("bytes")
+                    if (
+                        isinstance(count, (int, float))
+                        and 0 <= count <= s["expected_bytes"]
+                    ):
+                        now = time.monotonic()
+                        elapsed = now - s.get("sample_time", now)
+                        s["payload_bytes_s"] = (
+                            max(0, count - previous) / elapsed
+                            if previous is not None and elapsed > 0
+                            else None
+                        )
+                        wire = progress.get("transfer_bytes", 0)
+                        old_wire = s.get("transfer_bytes", 0)
+                        s["transfer_bytes_s"] = (
+                            max(0, wire - old_wire) / elapsed if elapsed > 0 else None
+                        )
+                        if count != previous or wire > old_wire:
+                            last = now
+                        previous = count
+                        s.update(bytes=count, transfer_bytes=wire, sample_time=now)
+                active[rel] = (proc, stage, event, log, last, previous)
+                s["idle_seconds"] = round(time.monotonic() - last)
+                code = proc.poll()
+                if code is not None:
+                    log.close()
+                    if code != 0:
+                        s.update(status="FAILED", exit_code=code)
+                        raise RuntimeError(
+                            f"{rel}: downloader exit {code}; -9 alone does not prove OOM"
+                        )
+                    verify(stage / rel, s["expected_bytes"])
+                    dst = ROOT / "models" / rel
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    # No replacement, even if another actor created the destination.
+                    os.link(stage / rel, dst)
+                    (stage / rel).unlink()
+                    del active[rel]
+                    s.update(
+                        status="VERIFIED_BYTES_OPENABLE",
+                        bytes=s["expected_bytes"],
+                        payload_bytes_s=None,
+                    )
+                elif time.monotonic() - last > stall:
+                    s["status"] = "STALLED"
+                    raise TimeoutError(
+                        f"{rel}: no measured reconstruction or transfer progress for {stall}s"
+                    )
+            save()
+            time.sleep(poll)
+        state["phase"] = "VERIFIED_BYTES_OPENABLE"
+        save()
+    except BaseException as exc:
+        state.update(phase="FAILED", error=str(exc))
+        save()
+        raise
+    finally:
+        for proc, _, _, log, _, _ in active.values():
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait()
+            log.close()
+        for sig, handler in old.items():
+            signal.signal(sig, handler)
+        active.clear()
+        save()
+        lock.close()
+
+
+if __name__ == "__main__":
+    run(
+        os.environ.get("PP_MODE", "both"),
+        os.environ["PP_BOOT_ID"],
+        os.environ.get("PP_AUTO_DOWNLOAD_MODELS", "1") == "1",
+    )
