@@ -1,6 +1,7 @@
 name: R4 candidate checks (never publishes)
 on:
   pull_request:
+    paths-ignore: ["docs/**", "README.md", "evidence/**"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -23,8 +24,11 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - name: Record capacity
-        run: df -h
+      - name: Reserve disk on this disposable runner
+        run: |
+          df -h
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
+          df -h
       - name: Build local candidate; no registry credentials or push
         run: docker build -t pp-r4-candidate .
       - name: Exercise actual candidate without GPU or model downloads

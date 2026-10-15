@@ -17,3 +17,5 @@ c.ServerApp.disable_check_xsrf = False
 c.IdentityProvider.token = os.environ["JUPYTER_PASSWORD"]
 c.ServerApp.terminado_settings = {"shell_command": ["/bin/bash"]}
 c.FileContentsManager.delete_to_trash = False
+# Uploads, terminals and notebooks do not need probing arbitrary host language servers.
+c.LanguageServerManager.autodetect = False

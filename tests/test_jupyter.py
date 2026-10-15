@@ -1,6 +1,6 @@
 """Real JupyterLab subprocess, HTTP login/XSRF, contents and terminal APIs."""
 
-import json, os, socket, subprocess, sys, tempfile, time, unittest
+import json, os, signal, socket, subprocess, sys, tempfile, time, unittest
 from pathlib import Path
 import requests
 
@@ -42,6 +42,7 @@ class JupyterIntegration(unittest.TestCase):
             env=env,
             stdout=cls.log,
             stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
         cls.session = requests.Session()
         cls.session.trust_env = False
@@ -60,10 +61,19 @@ class JupyterIntegration(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.proc.terminate()
-        cls.proc.wait(timeout=10)
-        cls.log.close()
-        cls.tmp.cleanup()
+        os.killpg(cls.proc.pid, signal.SIGTERM)
+        try:
+            cls.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(cls.proc.pid, signal.SIGKILL)
+            cls.proc.wait(timeout=5)
+            raise AssertionError(
+                "Jupyter shutdown exceeded 10 seconds:\n"
+                + (cls.root / "server.log").read_text()
+            )
+        finally:
+            cls.log.close()
+            cls.tmp.cleanup()
 
     def test_unauthenticated_and_wrong_token_denied(self):
         for headers in [{}, {"Authorization": "token wrong"}]:
