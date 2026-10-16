@@ -1,0 +1,132 @@
+# PAWLISHED & PINK — R4 release-candidate publication gate.
+# ADD as .github/workflows/r4-manual-publish.yml on DEFAULT branch (main).
+# This workflow has NO automatic triggers and does NOT merge any PR.
+# By default it builds/tests only. Image publication requires explicit input.
+name: R4 candidate - manually verify or publish
+
+'on':
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'Safety default: verify-only. Publication is a separate explicit choice.'
+        type: choice
+        required: true
+        default: verify-only
+        options:
+          - verify-only
+          - publish-r4-candidate
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pawlished-pink-r4-candidate-publication
+  cancel-in-progress: false
+
+jobs:
+  r4:
+    # Do not permit this workflow to run from another repository or branch.
+    if: github.repository == 'BmoreRavens522055/pawlished-pink-comfyui' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout the exact already-tested R4 commit (not main and not moving branch head)
+        uses: actions/checkout@v4
+        with:
+          ref: 2ca3cdcdb6323803ec21063610eef8e11ca7b6a0
+          persist-credentials: false
+
+      - name: Verify pinned source identity and disallow repository drift
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EXPECTED=2ca3cdcdb6323803ec21063610eef8e11ca7b6a0
+          ACTUAL="$(git rev-parse HEAD)"
+          echo "Source revision: $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+          test -z "$(git status --porcelain)"
+          echo "Source revision matched. No repository changes."
+
+      - name: Set up Python for the already-tested offline suite
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run offline behavioral tests (publishing is blocked if tests fail)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m pip install -r tests/requirements.txt
+          python -m unittest discover -s tests -v
+
+      - name: Free disposable runner disk space
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          df -h
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
+          df -h
+
+      - name: Build exact pinned R4 source with provenance labels
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker build \
+            --label org.opencontainers.image.source=https://github.com/BmoreRavens522055/pawlished-pink-comfyui \
+            --label org.opencontainers.image.revision=2ca3cdcdb6323803ec21063610eef8e11ca7b6a0 \
+            -t pp-r4-candidate:local .
+
+      - name: Smoke-test the actual built image (all 3 profiles, before any push)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash tests/container-smoke.sh pp-r4-candidate:local
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' pp-r4-candidate:local)" = '2ca3cdcdb6323803ec21063610eef8e11ca7b6a0'
+
+      - name: Record verify-only result (never pushes)
+        if: ${{ inputs.operation == 'verify-only' }}
+        shell: bash
+        run: |
+          echo '## R4: VERIFIED ONLY — NO IMAGE PUBLISHED' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Pinned commit: `2ca3cdcdb6323803ec21063610eef8e11ca7b6a0`' >> "$GITHUB_STEP_SUMMARY"
+          echo 'The R4 candidate passed the offline tests, Docker build and container smoke tests.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Authenticate to GHCR ONLY after all tests pass and explicit publish choice
+        if: ${{ inputs.operation == 'publish-r4-candidate' }}
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Publish unique R4 release-candidate tag and verify registry digest
+        if: ${{ inputs.operation == 'publish-r4-candidate' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          IMAGE='ghcr.io/bmoreravens522055/pawlished-pink-comfyui'
+          TAG="r4-rc1-2ca3cdcdb632-run${GITHUB_RUN_ID}-a${GITHUB_RUN_ATTEMPT}"
+          TARGET="$IMAGE:$TAG"
+          echo "Candidate tag (never latest or r2): $TARGET"
+          # The per-run tag is unique; no previously published tag is reused.
+          docker tag pp-r4-candidate:local "$TARGET"
+          docker push "$TARGET"
+          docker buildx imagetools inspect "$TARGET" > r4-remote-manifest.txt
+          cat r4-remote-manifest.txt
+          DIGEST="$(awk '/^Digest:/ {print $2; exit}' r4-remote-manifest.txt)"
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'FAIL: no verified registry digest'; exit 1; }
+          docker pull "$IMAGE@$DIGEST"
+          REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE@$DIGEST")"
+          test "$REVISION" = '2ca3cdcdb6323803ec21063610eef8e11ca7b6a0'
+          {
+            echo '## R4 RELEASE CANDIDATE PUBLISHED — NOT PRODUCTION APPROVED'
+            echo "**Pinned source commit:** $REVISION"
+            echo "**Versioned tag:** $TARGET"
+            echo "**Verified immutable image:** $IMAGE@$DIGEST"
+            echo 'This workflow did not merge PR #1, touch r2, edit RunPod templates or deploy a pod.'
+            echo 'The remaining RunPod browser/proxy/storage and actual inference checks are NOT RUN.'
+          } >> "$GITHUB_STEP_SUMMARY"
