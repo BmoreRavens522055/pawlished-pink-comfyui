@@ -200,7 +200,8 @@ def stage_uploads():
             raise ValueError(
                 "upload changed during intake; re-run after upload completes"
             )
-        results.append(root)
+        if root not in results:
+            results.append(root)
     return results
 
 
