@@ -80,25 +80,89 @@ def ingest(source, destination):
         target = destination / root
         if target.is_symlink():
             raise ValueError("episode root is a symlink")
-        # Existing intake is repeatable only when every uploaded member is identical.
+        # IMAGE and VIDEO packages are independently usable, but may share one
+        # episode root when both are staged on the same pod. Never replace an
+        # existing byte: unchanged overlaps are allowed, changes are rejected.
         if target.exists():
-            for i in members:
-                p = destination / i.filename
-                if any(
-                    a.is_symlink() for a in [p, *p.parents] if a != destination.parent
-                ):
+            if not target.is_dir():
+                raise ValueError("existing episode root is not a directory")
+
+            def safe_dir(path):
+                """Reject symlink parents and existing non-directory ancestors."""
+                if path == destination:
+                    return
+                safe_dir(path.parent)
+                if path.is_symlink():
                     raise ValueError("symlink in existing episode")
-                if i.is_dir():
-                    if not p.is_dir():
+                if path.exists() and not path.is_dir():
+                    raise ValueError("existing episode directory conflict")
+
+            stage = Path(tempfile.mkdtemp(prefix=".pp-intake-", dir=destination))
+            additions = []
+            made_dirs = []
+            made_files = []
+
+            def ensure_dir(path):
+                if path == destination:
+                    return
+                ensure_dir(path.parent)
+                if path.is_symlink():
+                    raise ValueError("symlink in existing episode")
+                if path.exists():
+                    if not path.is_dir():
                         raise ValueError("existing episode directory conflict")
-                elif (
-                    not p.is_file()
-                    or p.stat().st_size != i.file_size
-                    or crc(p) != i.CRC
-                ):
-                    raise ValueError(
-                        "existing episode conflict; upload a new versioned root"
-                    )
+                else:
+                    path.mkdir()
+                    made_dirs.append(path)
+
+            try:
+                # Preflight every overlap before creating any live files.
+                # Copy new members to hidden staging, checking ZIP CRC on read.
+                for i in members:
+                    p = destination / i.filename
+                    safe_dir(p.parent)
+                    if p.is_symlink():
+                        raise ValueError("symlink in existing episode")
+                    if i.is_dir():
+                        if p.exists() and not p.is_dir():
+                            raise ValueError("existing episode directory conflict")
+                    elif p.exists():
+                        if (
+                            not p.is_file()
+                            or p.stat().st_size != i.file_size
+                            or crc(p) != i.CRC
+                        ):
+                            raise ValueError(
+                                "existing episode conflict; upload a new versioned root"
+                            )
+                    else:
+                        staged = stage / i.filename
+                        staged.parent.mkdir(parents=True, exist_ok=True)
+                        with z.open(i) as src, staged.open("xb") as dst:
+                            shutil.copyfileobj(src, dst, 1024 * 1024)
+                        additions.append((staged, p))
+                # New paths become visible individually only after full preflight.
+                # They are hardlinked from hidden staging, never replacing files.
+                for i in members:
+                    if i.is_dir():
+                        ensure_dir(destination / i.filename)
+                for staged, p in additions:
+                    ensure_dir(p.parent)
+                    os.link(staged, p)
+                    made_files.append(p)
+                for d in REQUIRED:
+                    ensure_dir(target / d)
+            except BaseException:
+                # Ordinary failures leave the existing episode exactly intact.
+                # Interrupted work can also be retried: existing identical files
+                # are accepted and remaining independent files are added.
+                for p in reversed(made_files):
+                    p.unlink(missing_ok=True)
+                for p in reversed(made_dirs):
+                    p.rmdir()
+                raise
+            finally:
+                shutil.rmtree(stage, ignore_errors=True)
             return root
         temp = Path(tempfile.mkdtemp(prefix=".pp-intake-", dir=destination))
         try:
