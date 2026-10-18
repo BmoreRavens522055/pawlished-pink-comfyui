@@ -2,6 +2,7 @@
 # ADD as .github/workflows/r4-manual-publish.yml on DEFAULT branch (main).
 # This workflow has NO automatic triggers and does NOT merge any PR.
 # By default it builds/tests only. Image publication requires explicit input.
+# Release-gate draft: do not merge to main until exact source tests pass.
 name: R4 candidate - manually verify or publish
 
 'on':
@@ -36,14 +37,14 @@ jobs:
       - name: Checkout the exact already-tested R4 commit (not main and not moving branch head)
         uses: actions/checkout@v4
         with:
-          ref: 2ca3cdcdb6323803ec21063610eef8e11ca7b6a0
+          ref: 86fe4e4a411b3036800160f65fc5638ce7ae1657
           persist-credentials: false
 
       - name: Verify pinned source identity and disallow repository drift
         shell: bash
         run: |
           set -Eeuo pipefail
-          EXPECTED=2ca3cdcdb6323803ec21063610eef8e11ca7b6a0
+          EXPECTED=86fe4e4a411b3036800160f65fc5638ce7ae1657
           ACTUAL="$(git rev-parse HEAD)"
           echo "Source revision: $ACTUAL"
           test "$ACTUAL" = "$EXPECTED"
@@ -76,7 +77,7 @@ jobs:
           set -Eeuo pipefail
           docker build \
             --label org.opencontainers.image.source=https://github.com/BmoreRavens522055/pawlished-pink-comfyui \
-            --label org.opencontainers.image.revision=2ca3cdcdb6323803ec21063610eef8e11ca7b6a0 \
+            --label org.opencontainers.image.revision=86fe4e4a411b3036800160f65fc5638ce7ae1657 \
             -t pp-r4-candidate:local .
 
       - name: Smoke-test the actual built image (all 3 profiles, before any push)
@@ -84,14 +85,14 @@ jobs:
         run: |
           set -Eeuo pipefail
           bash tests/container-smoke.sh pp-r4-candidate:local
-          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' pp-r4-candidate:local)" = '2ca3cdcdb6323803ec21063610eef8e11ca7b6a0'
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' pp-r4-candidate:local)" = '86fe4e4a411b3036800160f65fc5638ce7ae1657'
 
       - name: Record verify-only result (never pushes)
         if: ${{ inputs.operation == 'verify-only' }}
         shell: bash
         run: |
           echo '## R4: VERIFIED ONLY — NO IMAGE PUBLISHED' >> "$GITHUB_STEP_SUMMARY"
-          echo 'Pinned commit: `2ca3cdcdb6323803ec21063610eef8e11ca7b6a0`' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Pinned commit: `86fe4e4a411b3036800160f65fc5638ce7ae1657`' >> "$GITHUB_STEP_SUMMARY"
           echo 'The R4 candidate passed the offline tests, Docker build and container smoke tests.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Authenticate to GHCR ONLY after all tests pass and explicit publish choice
@@ -109,7 +110,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           IMAGE='ghcr.io/bmoreravens522055/pawlished-pink-comfyui'
-          TAG="r4-rc1-2ca3cdcdb632-run${GITHUB_RUN_ID}-a${GITHUB_RUN_ATTEMPT}"
+          TAG="r4-rc2-86fe4e4a411b-run${GITHUB_RUN_ID}-a${GITHUB_RUN_ATTEMPT}"
           TARGET="$IMAGE:$TAG"
           echo "Candidate tag (never latest or r2): $TARGET"
           # The per-run tag is unique; no previously published tag is reused.
@@ -121,7 +122,7 @@ jobs:
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'FAIL: no verified registry digest'; exit 1; }
           docker pull "$IMAGE@$DIGEST"
           REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE@$DIGEST")"
-          test "$REVISION" = '2ca3cdcdb6323803ec21063610eef8e11ca7b6a0'
+          test "$REVISION" = '86fe4e4a411b3036800160f65fc5638ce7ae1657'
           {
             echo '## R4 RELEASE CANDIDATE PUBLISHED — NOT PRODUCTION APPROVED'
             echo "**Pinned source commit:** $REVISION"
