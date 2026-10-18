@@ -45,6 +45,8 @@ class Supervisor:
             raise ValueError("invalid PP_MODE")
         if os.environ.get("PP_AUTO_DOWNLOAD_MODELS", "1") not in ("0", "1"):
             raise ValueError("invalid auto-download setting")
+        if os.environ.get("PP_VIDEO_VARIANT", "hybrid") not in ("hybrid", "legacy", "both"):
+            raise ValueError("invalid PP_VIDEO_VARIANT")
         if os.environ.get("PP_STORAGE_REVIEWED") != "1":
             raise ValueError("template storage review required: PP_STORAGE_REVIEWED=1")
         if not ROOT.is_dir() or ROOT.is_symlink():
@@ -111,7 +113,11 @@ class Supervisor:
         if mode in ("image", "both"):
             required.add("TextEncodeQwenImage21")
         if mode in ("video", "both"):
-            required.add("MiniMaxH3ImageToVideo")
+            required.update({
+                "MiniMaxH3ImageToVideo",  # preserve older built-in video workflow
+                "MiniMaxH3ImageAndReferenceToVideo",  # exact owner MiniMax master
+                "VAEDecodeAudio", "CreateVideo", "SaveVideo",
+            })
         if required - set(nodes):
             raise RuntimeError(
                 "selected node classes missing: " + str(sorted(required - set(nodes)))

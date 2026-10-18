@@ -7,6 +7,14 @@
     "video": [
       "Comfy-Org/MiniMax-H3",
       "e5eb578a89295337b8ff433a035929ce0279e0b6"
+    ],
+    "video_hybrid": [
+      "diobrando0/MiniMax-H3-fl2va-ref2va-hybrids-bf16",
+      "660dbe2e1b699b139d3b6a7d26da07f4a78eb1e8"
+    ],
+    "video_legacy": [
+      "Comfy-Org/MiniMax-H3",
+      "e5eb578a89295337b8ff433a035929ce0279e0b6"
     ]
   },
   "MODELS": [
@@ -26,9 +34,10 @@
       675509688
     ],
     [
-      "video",
-      "diffusion_models/minimax_h3_fl2va_bf16.safetensors",
-      66280487368
+      "video_hybrid",
+      "diffusion_models/minimax_h3_hybrid_fl2va_ref2va_b40-49_bf16.safetensors",
+      66280487368,
+      "minimax_h3_hybrid_fl2va_ref2va_b40-49_bf16.safetensors"
     ],
     [
       "video",
@@ -44,6 +53,11 @@
       "video",
       "vae/minimax_h3_audio_vae_fp32.safetensors",
       605254808
+    ],
+    [
+      "video_legacy",
+      "diffusion_models/minimax_h3_fl2va_bf16.safetensors",
+      66280487368
     ]
   ]
 }

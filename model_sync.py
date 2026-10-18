@@ -20,6 +20,28 @@ MANIFEST = json.loads((CODE / "models.json").read_text())
 REPOS, MODELS = MANIFEST["REPOS"], MANIFEST["MODELS"]
 
 
+def select_entries(mode, entries=None, video_variant=None):
+    """Default to owner's hybrid master, retain legacy FL2VA as opt-in fallback."""
+    if mode not in ("image", "video", "both"):
+        raise ValueError("invalid model profile")
+    variant = video_variant or os.environ.get("PP_VIDEO_VARIANT", "hybrid")
+    if variant not in ("hybrid", "legacy", "both"):
+        raise ValueError("invalid PP_VIDEO_VARIANT")
+    families = set()
+    if mode in ("image", "both"):
+        families.add("image")
+    if mode in ("video", "both"):
+        families.add("video")  # shared MiniMax text encoder and both VAEs
+        if variant in ("hybrid", "both"):
+            families.add("video_hybrid")
+        if variant in ("legacy", "both"):
+            families.add("video_legacy")
+    selected = [m for m in (MODELS if entries is None else entries) if m[0] in families]
+    if not selected:
+        raise ValueError("empty model profile")
+    return selected
+
+
 def verify(path, expected):
     if path.is_symlink() or not path.is_file() or path.stat().st_size != expected:
         raise ValueError("missing, symlink, or wrong byte count: " + str(path))
@@ -44,13 +66,7 @@ def run(
     deadline=14400,
     poll=1,
 ):
-    entries = [
-        m
-        for m in (MODELS if entries is None else entries)
-        if mode == "both" or m[0] == mode
-    ]
-    if mode not in ("image", "video", "both") or not entries:
-        raise ValueError("invalid or empty model profile")
+    entries = select_entries(mode, entries)
     SETUP.mkdir(parents=True, exist_ok=True)
     lock = (SETUP / "model.lock").open("a")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -78,7 +94,11 @@ def run(
             old[sig] = signal.signal(sig, stop)
     try:
         pending = []
-        for family, rel, size in entries:
+        for item in entries:
+            family, rel, size = item[:3]
+            remote_rel = item[3] if len(item) == 4 else rel
+            if not remote_rel or Path(remote_rel).is_absolute() or ".." in Path(remote_rel).parts:
+                raise ValueError("unsafe remote model path: " + str(remote_rel))
             dst = ROOT / "models" / rel
             s = state["files"][rel] = {
                 "expected_bytes": size,
@@ -91,7 +111,7 @@ def run(
                 s.update(status="VERIFIED_BYTES_OPENABLE", bytes=size)
             else:
                 s["status"] = "PENDING"
-                pending.append((family, rel, size))
+                pending.append((family, rel, size, remote_rel))
         save()
         if pending and not auto:
             raise RuntimeError("downloads disabled and selected models missing")
@@ -117,7 +137,7 @@ def run(
             if time.monotonic() - start > deadline:
                 raise TimeoutError("model sync wall-clock deadline exceeded")
             while pending and len(active) < workers:
-                family, rel, size = pending.pop(0)
+                family, rel, size, remote_rel = pending.pop(0)
                 stage = ROOT / ".pp-model-staging" / family / Path(rel).name
                 stage.mkdir(parents=True, exist_ok=True)
                 event = stage / "progress.json"
@@ -128,7 +148,7 @@ def run(
                 repo, rev = REPOS[family]
                 cmd = (
                     worker_command or [sys.executable, str(CODE / "hf_worker.py")]
-                ) + [repo, rev, rel, str(stage), str(event), boot, attempt]
+                ) + [repo, rev, remote_rel, str(stage), str(event), boot, attempt]
                 env = os.environ.copy()
                 env.update(
                     HF_HOME=str(stage / ".hf-home"),
@@ -144,9 +164,9 @@ def run(
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
                 )
-                active[rel] = (proc, stage, event, log, time.monotonic(), None)
+                active[rel] = (proc, stage, remote_rel, event, log, time.monotonic(), None)
                 state["files"][rel].update(status="DOWNLOADING", pid=proc.pid)
-            for rel, (proc, stage, event, log, last, previous) in list(active.items()):
+            for rel, (proc, stage, remote_rel, event, log, last, previous) in list(active.items()):
                 s = state["files"][rel]
                 progress = read(event)
                 if (
@@ -174,7 +194,7 @@ def run(
                             last = now
                         previous = count
                         s.update(bytes=count, transfer_bytes=wire, sample_time=now)
-                active[rel] = (proc, stage, event, log, last, previous)
+                active[rel] = (proc, stage, remote_rel, event, log, last, previous)
                 s["idle_seconds"] = round(time.monotonic() - last)
                 code = proc.poll()
                 if code is not None:
@@ -184,12 +204,12 @@ def run(
                         raise RuntimeError(
                             f"{rel}: downloader exit {code}; -9 alone does not prove OOM"
                         )
-                    verify(stage / rel, s["expected_bytes"])
+                    verify(stage / remote_rel, s["expected_bytes"])
                     dst = ROOT / "models" / rel
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     # No replacement, even if another actor created the destination.
-                    os.link(stage / rel, dst)
-                    (stage / rel).unlink()
+                    os.link(stage / remote_rel, dst)
+                    (stage / remote_rel).unlink()
                     del active[rel]
                     s.update(
                         status="VERIFIED_BYTES_OPENABLE",
@@ -210,7 +230,7 @@ def run(
         save()
         raise
     finally:
-        for proc, _, _, log, _, _ in active.values():
+        for proc, _, _, _, log, _, _ in active.values():
             if proc.poll() is None:
                 os.killpg(proc.pid, signal.SIGTERM)
                 try:

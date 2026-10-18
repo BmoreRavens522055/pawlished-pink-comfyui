@@ -10,6 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PP_COMFY_PY=/opt/pp-venv/bin/python \
     PP_AUTO_DOWNLOAD_MODELS=1 \
     PP_MODE=both \
+    PP_VIDEO_VARIANT=hybrid \
     PP_DOWNLOAD_WORKERS=1
 
 # ComfyUI stays outside /workspace, which RunPod can mount as a volume.
@@ -48,6 +49,16 @@ RUN --mount=type=secret,id=proxy_ca \
       -c /opt/pp-install/torch-constraints.txt \
       -c /opt/pp-install/constraints.txt \
       -r /opt/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite/requirements.txt
+
+# Pin the owner's MiniMax MASTER combined first-frame + reference-image node.
+# Its Python implementation uses the pinned ComfyUI built-in H3 helpers; no unpinned pip install.
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export SSL_CERT_FILE=/run/secrets/proxy_ca PIP_CERT=/run/secrets/proxy_ca GIT_SSL_CAINFO=/run/secrets/proxy_ca; fi; \
+    git clone https://github.com/BigStationW/ComfyUi-MiniMax-H3-Image-And-Reference-To-Video.git \
+      /opt/ComfyUI/custom_nodes/ComfyUi-MiniMax-H3-Image-And-Reference-To-Video && \
+    git -C /opt/ComfyUI/custom_nodes/ComfyUi-MiniMax-H3-Image-And-Reference-To-Video \
+      checkout --detach f12a48fe9f1c8ee313a081a91327c31b5bfb9895 && \
+    test "$(git -C /opt/ComfyUI/custom_nodes/ComfyUi-MiniMax-H3-Image-And-Reference-To-Video rev-parse HEAD)" = 'f12a48fe9f1c8ee313a081a91327c31b5bfb9895'
 
 # Separate small download environment; models NEVER build into the public image.
 RUN --mount=type=secret,id=proxy_ca \
